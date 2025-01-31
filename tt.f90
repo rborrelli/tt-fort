@@ -6,7 +6,11 @@ module tt_lib
  use time_lib
  use say_lib
  implicit none
- integer,parameter :: tt_size=1023
+! integer,parameter :: tt_size=1023
+! Raffaele Borrelli
+! integer,parameter :: tt_size=2047
+! Raffaele Borrelli
+ integer,parameter :: tt_size=4095
  double precision,parameter :: errval = -999.d0
 
  type,public:: dtt
@@ -97,6 +101,10 @@ module tt_lib
     module procedure dtt_dot, ztt_dot
  end interface
 
+! Raffaele Borrelli 15/2/2018
+ interface zdot
+    module procedure zztt_dot
+ end interface
 
  interface copy
   module procedure dtt_copy,ztt_copy
@@ -150,6 +158,7 @@ contains
   double precision,allocatable :: work(:),tau(:),mat(:),u(:)
   double precision :: err,nrm
   double precision,external :: dnrm2
+  double precision :: umax
   !double precision :: t1,t2
   l=arg%l; m=arg%m
   if(m.lt.l)return
@@ -170,7 +179,14 @@ contains
     forall(i=1:min(j,mm))    mat(i+(j-1)*mn)=u(i+(j-1)*mm)
     forall(i=min(j,mm)+1:mn) mat(i+(j-1)*mn)=0.d0
    end do
+   !------
+   ! By Raffaele Borrelli
+   umax = maxval(abs(mat(1:(min(nn,mm)+(nn-1)*mn))))
+   mat = mat/umax ! mat is R of the QR decomposition
+   !-----
    call dorgqr(mm,mn,mn,u,mm,tau,work,lwork,info)
+   ! By Raffaele Borrelli
+   u(1:mm*mn) = u(1:mm*mn)*umax  ! u now is Q
    if(info.ne.0)then; write(*,*) subnam,': dorgqr info: ',info; stop; end if
    call dcopy(mm*mn, u,1,arg%u(k)%p,1)
    call dgemm('n','n',mn,kk,nn,1.d0,mat,mn,arg%u(k+1)%p,nn,0.d0,u,mn)
@@ -196,6 +212,7 @@ contains
   complex(8),allocatable :: work(:),tau(:),mat(:),u(:)
   double precision :: err,nrm
   double precision,external :: dznrm2
+  double precision :: umax
 
   l=arg%l; m=arg%m
   if(m.lt.l)return
@@ -216,7 +233,14 @@ contains
     forall(i=min(j,mm)+1:mn) mat(i+(j-1)*mn)=(0.d0,0.d0)
    end do
 
+   !------
+   ! By Raffaele Borrelli
+   umax = maxval(abs(mat(1:(min(nn,mm)+(nn-1)*mn))))
+   mat = mat/umax ! mat is R of the QR decomposition
+   !-----
    call zungqr(mm,mn,mn,u,mm,tau,work,lwork,info)
+   ! By Raffaele Borrelli
+   u(1:mm*mn) = u(1:mm*mn)*umax  ! u now is Q
    if(info.ne.0)then; write(*,*) subnam,': zungqr info: ',info; stop; end if
 !
    nrm=dznrm2(mm*nn,arg%u(k)%p,1)
@@ -257,6 +281,7 @@ contains
   double precision,allocatable :: work(:),s(:),mat(:),u(:)
   double precision :: err,nrm
   double precision,external :: dnrm2
+  double precision :: smax
 
   l=arg%l; m=arg%m
   if(m.le.l)return
@@ -276,6 +301,12 @@ contains
       rr = min(rr, rmax)
    end if
    forall(i=1:mm,j=1:rr)mat((j-1)*mm+i)=s(j)*mat((j-1)*mm+i)
+   !------- 
+   ! Raffaele Borrelli
+   smax = s(1)
+   mat = mat/smax
+   u = u*smax
+   !-------
    call d2submat(rr,nn,u,mn,arg%u(k)%p)
 
    call dgemm('n','n',kk,rr,mm,1.d0,arg%u(k-1)%p,kk,mat,mm,0.d0,u,kk)
@@ -304,6 +335,7 @@ contains
   complex(8),allocatable :: work(:),mat(:),u(:)
   double precision :: err,nrm
   double precision,external :: dznrm2
+  double precision :: smax
 
   l=arg%l; m=arg%m
   if(m.le.l)return
@@ -319,12 +351,18 @@ contains
   do k=m,l+1,-1
    mm=r(k-1); nn=n(k)*r(k); mn=min(mm,nn); kk=r(k-2)*n(k-1)
    call zgesvd('s','s',mm,nn,arg%u(k)%p,mm,s,mat,mm,u,mn,work,lwork,rwork,info)
-   if(info.ne.0)then; write(*,*)subnam,': dgesvd info: ',info; stop; end if
+   if(info.ne.0)then; write(*,*)subnam,': zgesvd info: ',info; stop; end if
    rr=chop(s(1:mn),tol/dsqrt(dble(m-l)))
    if (present(rmax)) then
       rr = min(rr, rmax)
    end if
    forall(i=1:mm,j=1:rr)mat((j-1)*mm+i)=s(j)*mat((j-1)*mm+i)
+   !------- 
+   ! Raffaele Borrelli
+   smax = s(1)
+   mat = mat/smax
+   u = u*smax
+   !-------
    call z2submat(rr,nn,u,mn,arg%u(k)%p)
 
    call zgemm('n','n',kk,rr,mm,(1.d0,0.d0),arg%u(k-1)%p,kk,mat,mm,(0.d0,0.d0),u,kk)
@@ -1300,6 +1338,53 @@ contains
  deallocate(phi)
  deallocate(res)
  end function ztt_dot
+
+! ZZTT_DOT can be used when the definition of the dot product does not include
+! the complex conjugation.
+ function zztt_dot(tt1,tt2) result(dt)
+ use matrix_util, only: ztransp
+ implicit none
+ type(ztt), intent(in), target :: tt1,tt2
+ integer i
+ complex(8) dt(tt1%r(tt1%l-1)*tt2%r(tt2%l-1)*tt1%r(tt1%m)*tt2%r(tt2%m))
+ complex(8), allocatable :: phi(:), res(:) 
+ integer :: l,m,mem,C
+ integer, pointer :: r1(:), r2(:), n(:)
+ real(8) dznrm2
+ l = tt1 % l
+ m = tt1 % m
+ r1 => tt1 % r
+ r2 => tt2 % r
+ n  => tt1 % n
+ mem = 0
+ do i = l-1,m
+    mem = max(mem,r1(i)*r2(i))
+ end do
+ C = r1(l-1)*r2(l-1)
+ mem = mem * C
+ allocate(phi(mem))
+ mem = 0
+ do i = l,m
+    mem = max(mem,C*r1(i-1)*n(i)*r2(i))
+ end do 
+ allocate(res(mem))
+ call eye(phi,C)
+ do i = l,m
+    !Multiply phi by smth
+    !phi  phi(a0,b0,a1,b1)*cr1(a1,i1,a2)*cr2(b1,i1,b2)
+    !phi(C,a1,b1)*cr2(b1,i1,b2)->res(C,a1,i1,b2)->res(a1,i1,b2,C)*cr1(a1,i1,a2)->a2,b2,C->C
+    call zgemm('n','n',C*r1(i-1),n(i)*r2(i),r2(i-1),(1d0,0d0),phi,C*r1(i-1),tt2%u(i)%p,r2(i-1),(0d0,0d0),res,C*r1(i-1))
+    call ztransp(C,r1(i-1)*n(i)*r2(i),res)
+    ! Be careful with the number of rows and cols in the subroutine zgemm below! They are swapped compared
+    ! with the function zdot.
+    call zgemm('c','n',r1(i),r2(i)*C,r1(i-1)*n(i),(1d0,0d0),conjg(tt1%u(i)%p),r1(i-1)*n(i),res,r1(i-1)*n(i),(0d0,0d0),phi,r1(i))
+    call ztransp(r1(i)*r2(i),C,phi)
+ end do
+ call zcopy(C*r1(m)*r2(m),phi,1,dt,1)
+ deallocate(phi)
+ deallocate(res)
+ end function zztt_dot
+
 
 ! NORM
 
